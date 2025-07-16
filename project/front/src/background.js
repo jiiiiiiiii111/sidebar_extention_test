@@ -1,5 +1,5 @@
 import { collectBrowser } from './utils/browserCollector.js';
-import { collectDocument } from './utils/documentCollector.js';
+import { documentCollector } from './utils/documentCollector.js';
 import { getPageMode } from './utils/pageMode';
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -53,54 +53,6 @@ function handleBrowserAutoCollect(tabId, triggerType) {
   }, 1500);
 }
 
-// 자동 수집 트리거 관리: Document
-function handleDocumentAutoCollect(tabId, triggerType) {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-  }
-  debounceTimer = setTimeout(() => {
-    chrome.tabs.get(tabId, (tab) => {
-      const url = tab.url;
-      const now = Date.now();
-
-      // 페이지 모드 감지
-      console.log("[AutoDoc] URL:",url);
-      const mode = getPageMode(url);
-      console.log("[AutoDoc] Mode:", mode);
-      if (mode !== "document") {
-        debounceTimer = null;
-        return;
-      }
-
-      // 10초 이내 동일 url에 대한 연속 요청 무시
-      if (url === lastSentUrl && now - lastSentTime < 10000) {
-        debounceTimer = null;
-        return;
-      }
-      lastSentUrl = url;
-      lastSentTime = now;
-
-      // WebSocket 리셋
-      // 사용자가 혼동하지 않게 이전 요약 결과를 지우고 "새로운 요약이 곧 시작됨"을 UI에 전달
-      chrome.runtime.sendMessage({ type: "RESET_WEBSOCKET_MESSAGE" });
-
-      // 데이터 수집 및 전송
-      collectDocument(tabId).then((result) => {
-        if (result) {
-            console.log("[AutoDoc] 추출된 텍스트:", result);
-            chrome.runtime.sendMessage({
-                type: "DOCUMENT_PROCESSED",
-                result, // 프론트로 요약 결과 보내기
-            });
-        }
-      })
-
-      debounceTimer = null;
-    });
-  }, 1500);
-}
-
-
 
 // 자동 트리거: 탭 로드 완료 (url, complete)
 chrome.tabs.onUpdated.addListener((id, info, tab) => {
@@ -119,8 +71,6 @@ chrome.tabs.onUpdated.addListener((id, info, tab) => {
       // console.log(mode);
       if (mode === "recommendation") {
         handleBrowserAutoCollect(id, 'complete');
-      } else if (mode === "document") {
-        handleDocumentAutoCollect(id, 'complete');
       }
     }
   } catch (e) {
@@ -179,6 +129,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else {
         sendResponse({ error: "Collection failed" });
       }
+    });
+    return true; // async 응답
+  }
+  if (msg.type === "DOCS_DETECTED") {
+    // 로그인 상태 확인
+    chrome.storage.local.get(['token'], (result) => {
+      const token = result.token;
+      if (!token) {
+        console.log("로그인이 필요합니다. PDF 처리를 건너뜁니다.");
+        sendResponse({ status: "login_required", error: "로그인이 필요합니다." });
+        return;
+      }
+
+      // async 함수를 별도로 정의하여 실행
+      (async () => {
+        try {
+          const pdfUrl = msg.url;
+          const blob = await documentCollector(pdfUrl);
+
+          const formData = new FormData();
+          formData.append("file", blob, "document.pdf");
+          formData.append("fast", "true");
+
+          const response = await fetch("http://localhost:8000/collect/doc", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`
+            },
+            body: formData,
+          });
+
+          const result = await response.json();
+          console.log("추출된 텍스트:", result);
+          sendResponse({ status: "PDF processed", result: result });
+        } catch (error) {
+          console.error("PDF 처리 중 오류:", error);
+          sendResponse({ status: "error", error: error.message });
+        }
+      })();
     });
     return true; // async 응답
   }
