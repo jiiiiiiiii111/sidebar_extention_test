@@ -19,6 +19,7 @@ export function getPageMode(url) {
     return "default";
   }
   if (url.includes('.pdf') || url.includes('.doc') || url.includes('.docx')) {
+    chrome.runtime.sendMessage({ type: "DOCS_DETECTED" , url: url});
     return "document";
   }
   if (url.includes('youtube.com/watch') || url.includes('youtube.com/shorts')) {
